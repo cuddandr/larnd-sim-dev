@@ -1,8 +1,5 @@
 #!/usr/bin/env bash
 
-# Stop on any error
-set -e
-
 # Usage function
 usage() {
     echo "Usage: $0 [options]"
@@ -57,7 +54,7 @@ echo "Running setup/install for larnd-sim..."
 # Check if setup script exists
 if [[ ! -f "${SETUP_SCRIPT}" ]]; then
     echo "Error: Setup script '$SETUP_SCRIPT' not found."
-    exit 1
+    return 1
 fi
 
 # Source the setup script to set the 'venv_name' variable
@@ -101,18 +98,13 @@ else
     cd ..
 fi
 
-echo "--------------------------------------------------------------------------------"
+echo "---------------------------------------------------------------"
 echo "Setup complete."
 
 if [ "${ACTIVATE}" = true ]; then
     echo "Activating environment: $venv_name"
     source "$venv_name/bin/activate"
-    echo "--------------------------------------------------------------------------------"
-    echo "NOTE: If you ran this script as './install_larndsim.sh', the activation only applied"
-    echo "to the script's subshell. To activate in your current shell, run:"
-    echo "  source $venv_name/bin/activate"
-    echo "  OR run this script as: source install_larndsim.sh -a"
-    echo "--------------------------------------------------------------------------------"
 else
     echo "To activate the environment in your current shell, run: source $venv_name/bin/activate"
 fi
+echo "---------------------------------------------------------------"
