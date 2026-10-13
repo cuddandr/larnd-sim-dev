@@ -52,9 +52,17 @@ done
 echo "Running setup/install for larnd-sim..."
 
 # Check if setup script exists
+export EXIT_CODE=1
 if [[ ! -f "${SETUP_SCRIPT}" ]]; then
     echo "Error: Setup script '$SETUP_SCRIPT' not found."
-    return 1
+
+    if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+        # Script is being run (subshell)
+        exit "${EXIT_CODE}"
+    else
+        # Script is being sourced
+        return "${EXIT_CODE}"
+    fi
 fi
 
 # Source the setup script to set the 'venv_name' variable
