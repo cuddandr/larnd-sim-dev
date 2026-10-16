@@ -79,6 +79,7 @@ if [[ ! -d "$venv_name" ]]; then
     source "$venv_name/bin/activate"
 
     echo "Upgrading pip and installing base dependencies..."
+    echo "-------------------------------------------------"
     pip install --upgrade pip setuptools wheel
     pip install matplotlib
 else
@@ -89,21 +90,37 @@ fi
 # Repository Management
 REPO_DIR="larnd-sim"
 if [[ ! -d "${REPO_DIR}" ]]; then
+    echo "-------------------------------------------------"
     echo "Cloning larnd-sim repository..."
-    git clone -b ${GIT_BRANCH} ${GIT_DEPTH} https://github.com/DUNE/larnd-sim ${REPO_DIR}
+
+    # Determine whether to use SSH or HTTPS
+    if ssh -T -o BatchMode=yes git@github.com 2>&1 | grep -q "successfully authenticated"; then
+        echo "SSH authentication successful. Using SSH URL."
+        CLONE_URL="git@github.com:DUNE/larnd-sim.git"
+    else
+        echo "SSH authentication failed or not configured. Using HTTPS URL."
+        CLONE_URL="https://github.com/DUNE/larnd-sim"
+    fi
+
+    echo "Checking out ${GIT_BRANCH}"
+    if [[ -n ${GIT_DEPTH} ]]; then
+        echo "...at depth ${GIT_DEPTH}"
+    fi
+    git clone -b ${GIT_BRANCH} ${GIT_DEPTH} "${CLONE_URL}" "${REPO_DIR}"
 else
     echo "Using existing repository in ${REPO_DIR}"
 fi
 
 # Editable Installation
+echo "-------------------------------------------------"
 echo "Checking if larndsim is already installed..."
 if pip show larndsim > /dev/null 2>&1; then
     echo "larndsim is already installed. Skipping installation."
 else
     echo "Performing editable install of larnd-sim..."
-    cd "${REPO_DIR}"
+    pushd "${REPO_DIR}"
     pip install -e .[runner]
-    cd ..
+    popd
 fi
 
 echo "---------------------------------------------------------------"
