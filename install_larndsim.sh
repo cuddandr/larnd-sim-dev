@@ -81,7 +81,7 @@ if [[ ! -d "$venv_name" ]]; then
     echo "Upgrading pip and installing base dependencies..."
     echo "-------------------------------------------------"
     pip install --upgrade pip setuptools wheel
-    pip install matplotlib
+    pip install matplotlib scipy
 else
     echo "Using existing virtual environment: $venv_name"
     source "$venv_name/bin/activate"
