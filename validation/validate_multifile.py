@@ -599,6 +599,7 @@ def main(argv=None):
                 T, cp = cvm_2samp(data[f][q], data[ref_path][q])
                 c2, c2p, c2ndf = chi2_2samp(data[f]["_hists"][q],
                                             data[ref_path]["_hists"][q])
+                V = np.sqrt(c2 / (len(data[f][q]) * (c2ndf - 1)))
                 h, href = data[f]["_hists"][q], data[ref_path]["_hists"][q]
                 sigma = np.sqrt(href.astype(np.float64) + h.astype(np.float64))
                 use = sigma > 0
@@ -612,8 +613,9 @@ def main(argv=None):
                             "pull_max_abs": bias["max_abs_pull"],
                             "pull_argmax_bin": bias["argmax_bin"]}
                 print(f"    {q:<12}: KS D={D:>12.4g}  p={p:>9.3g}  "
-                      f"W1={w1:>15.6g}  CvM T={T:>12.4g}  p={cp:>9.3g}  "
-                      f"chi2={c2:>12.4g}/{c2ndf}  p={c2p:>9.3g}")
+                      f"W1={w1:>12.4g}  CvM T={T:>12.4g}  p={cp:>9.3g}  "
+                      f"chi2={c2:>9.3g}/{c2ndf}  p={c2p:>9.3g}  "
+                      f"CvM V={V:>9.3g}")
                 print(f"    {'':<12}  bias: offset={bias['offset_z']:>+8.3f} sigma  "
                       f"slope={bias['slope_z_per_bin']:>+9.4f} sigma/bin  "
                       f"max|pull|={bias['max_abs_pull']:>7.3f} @ bin {bias['argmax_bin']}")
