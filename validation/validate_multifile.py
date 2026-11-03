@@ -16,6 +16,10 @@ first file) is compared against every other file via two-sample KS,
 Cramer-von Mises, 1-D Wasserstein-1, chi-square, and binned
 Jensen-Shannon distance (bits) tests.
 
+Text output is rendered with Rich tables (aligned columns, rules between
+files, p-value flagging); --plain forces plain text, which is also the
+automatic fallback when Rich is not installed.
+
 Standalone: no imports from validate_dists.py / validate_sim.py.
 """
 
@@ -31,6 +35,15 @@ import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
+try:
+    from rich import box as _rbox
+    from rich.console import Console as _RichConsole
+    from rich.text import Text as _RichText
+    from rich.table import Table as _RichTable
+    _HAVE_RICH = True
+except ImportError:
+    _HAVE_RICH = False
 
 STYLE_SAME_COMMIT = {
     # "color": "C0",
@@ -541,6 +554,94 @@ def print_stats_block(name, s):
           f"q75={s['q75']:.6g}  q99={s['q99']:.6g}")
 
 
+# ---------------------------------------------------------------------------
+# Rich text output (tables, rules, p-value flagging)
+# ---------------------------------------------------------------------------
+def make_console(args):
+    """Rich Console, or None for plain-text output (--plain, or rich not
+    installed). Non-TTY output (piped to a log) gets a wide fixed width so
+    tables are not wrapped or cropped; ANSI colors are stripped
+    automatically when not writing to a terminal."""
+    if args.plain or not _HAVE_RICH:
+        if not args.plain:
+            print("note: rich not installed -> plain text output "
+                  "(pip install rich, or pass --plain to silence this note)",
+                  file=sys.stderr)
+        return None
+    return _RichConsole() if sys.stdout.isatty() else _RichConsole(width=220)
+
+
+STAT_COL_KEYS = ["min", "max", "mean", "median", "std",
+                 "q01", "q25", "q75", "q99"]
+
+
+def rich_stats_table(stats):
+    """Per-file descriptive statistics: one row per quantity."""
+    t = _RichTable(box=_rbox.SIMPLE_HEAVY, header_style="bold")
+    t.add_column("quantity")
+    t.add_column("count", justify="right")
+    for k in STAT_COL_KEYS:
+        t.add_column(k, justify="right")
+    for q in QUANTITIES:
+        s = stats[q]
+        t.add_row(q, f"{s['count']:,}",
+                  *(f"{s[k]:.6g}" for k in STAT_COL_KEYS))
+    return t
+
+
+def rich_tests_table(tests, ref_label):
+    """Two-sample test results vs the reference: one row per quantity.
+    Rows are flagged when the smallest of the KS/CvM/chi2 p-values is
+    below 0.01 (yellow) or 0.001 (red)."""
+    t = _RichTable(title=_RichText.assemble(
+                       "two-sample tests vs reference ", (ref_label, "bold")),
+                   box=_rbox.SIMPLE_HEAVY, header_style="bold",
+                   caption="row color: yellow p<0.01, red p<0.001 "
+                           "(min of KS/CvM/chi² p)",
+                   caption_justify="left")
+    t.add_column("quantity")
+    t.add_column("KS D", justify="right")
+    t.add_column("KS p", justify="right")
+    t.add_column("W1", justify="right")
+    t.add_column("JSdist", justify="right")
+    t.add_column("CvM T", justify="right")
+    t.add_column("CvM p", justify="right")
+    t.add_column("chi²/ndf", justify="right")
+    t.add_column("chi² p", justify="right")
+    t.add_column("Cramers V", justify="right")
+    for q, d in tests.items():
+        p_min = min(d["ks_pvalue"], d["cvm_pvalue"], d["chi2_pvalue"])
+        style = ("bold red" if p_min < 1e-3
+                 else "yellow" if p_min < 1e-2 else None)
+        t.add_row(q,
+                  f"{d['ks_stat']:.4g}", f"{d['ks_pvalue']:.3g}",
+                  f"{d['wasserstein']:.4g}", f"{d['js_distance']:.4g}",
+                  f"{d['cvm_stat']:.4g}", f"{d['cvm_pvalue']:.3g}",
+                  f"{d['chi2']:.4g}/{d['chi2_ndf']}",
+                  f"{d['chi2_pvalue']:.3g}", f"{d['c_v']:.3g}",
+                  style=style)
+    return t
+
+
+def rich_bias_table(tests, ref_label):
+    """Pull bias metrics vs the reference: one row per quantity."""
+    t = _RichTable(title=_RichText.assemble(
+                       "pull bias vs reference ", (ref_label, "bold")),
+                   box=_rbox.SIMPLE, header_style="bold")
+    t.add_column("quantity")
+    t.add_column("offset (σ)", justify="right")
+    t.add_column("slope (σ/bin)", justify="right")
+    t.add_column("max |pull|", justify="right")
+    t.add_column("@ bin", justify="right")
+    for q, d in tests.items():
+        t.add_row(q,
+                  f"{d['pull_offset_z']:+.3f}",
+                  f"{d['pull_slope_z_per_bin']:+.4f}",
+                  f"{d['pull_max_abs']:.3f}",
+                  str(d["pull_argmax_bin"]))
+    return t
+
+
 def main(argv=None):
     t_start = time.monotonic()
     ap = argparse.ArgumentParser(
@@ -559,6 +660,9 @@ def main(argv=None):
                     help="reference file for stat tests (default: first file)")
     ap.add_argument("--text-only", action="store_true",
                     help="skip all plotting")
+    ap.add_argument("--plain", action="store_true",
+                    help="plain-text output (no Rich tables; also the "
+                         "automatic fallback when rich is not installed)")
     ap.add_argument("--plot-dir", default="./multifile_plots",
                     help="output directory for plots (default: ./multifile_plots)")
     ap.add_argument("--json", help="save results JSON to PATH")
@@ -594,10 +698,26 @@ def main(argv=None):
     else:
         ref_path = files[0]
 
+    console = make_console(args)
+
     labels = {f: file_label(f) for f in files}
-    print(f"mode       : {'same_commit' if args.same_commit else 'diff_commit'}")
-    print(f"files      : {len(files)}")
-    print(f"reference  : {os.path.basename(ref_path)} (label {labels[ref_path]})")
+    if console is not None:
+        t = _RichTable(box=_rbox.SIMPLE, show_header=False, pad_edge=False)
+        t.add_column(style="bold")
+        t.add_column()
+        t.add_row("mode", "same_commit" if args.same_commit else "diff_commit")
+        t.add_row("files", str(len(files)))
+        t.add_row("reference", _RichText.assemble(
+            os.path.basename(ref_path), f" (label {labels[ref_path]})"))
+        t.add_row("bins", str(args.bins))
+        t.add_row("pixel_encoding", args.pixel_encoding)
+        t.add_row("drop_saturated", str(bool(args.drop_saturated)))
+        t.add_row("density", str(bool(args.density)))
+        console.print(t)
+    else:
+        print(f"mode       : {'same_commit' if args.same_commit else 'diff_commit'}")
+        print(f"files      : {len(files)}")
+        print(f"reference  : {os.path.basename(ref_path)} (label {labels[ref_path]})")
 
     data = {}
     for f in files:
@@ -618,18 +738,27 @@ def main(argv=None):
         }
 
     for f in files:
-        print(f"\n== {os.path.basename(f)} ==")
-        print(f"  label      : {labels[f]}")
-        drop_note = (f"  (dropped {data[f]['n_dropped_saturated']} "
+        drop_note = (f" (dropped {data[f]['n_dropped_saturated']} "
                      f"dataword==255 packets)"
                      if args.drop_saturated else "")
-        print(f"  n_packets  : {data[f]['n_packets']}  "
-              f"(after packet_type==0 filter){drop_note}")
-        for q in QUANTITIES:
-            print_stats_block(q, data[f]["_stats"][q])
+        if console is not None:
+            console.rule(_RichText.assemble(
+                             (os.path.basename(f), "bold"),
+                             f" · label {labels[f]}"),
+                         style="cyan" if f == ref_path else None)
+            console.print(f"n_packets: {data[f]['n_packets']:,} "
+                          f"(after packet_type==0 filter){drop_note}",
+                          highlight=False)
+            console.print(rich_stats_table(data[f]["_stats"]))
+        else:
+            print(f"\n== {os.path.basename(f)} ==")
+            print(f"  label      : {labels[f]}")
+            print(f"  n_packets  : {data[f]['n_packets']}  "
+                  f"(after packet_type==0 filter){drop_note}")
+            for q in QUANTITIES:
+                print_stats_block(q, data[f]["_stats"][q])
 
         if args.stat_tests and f != ref_path:
-            print(f"  vs reference {labels[ref_path]}:")
             tests = {}
             for q in QUANTITIES:
                 D, p = ks_2samp(data[f][q], data[ref_path][q])
@@ -647,23 +776,34 @@ def main(argv=None):
                 bias = pull_bias_metrics(pull, use)
                 tests[q] = {"ks_stat": D, "ks_pvalue": p, "wasserstein": w1,
                             "jsd": jsc ** 2, "js_distance": jsc,
-                            "cvm_stat": T, "cvm_pvalue": cp,
+                            "cvm_stat": T, "cvm_pvalue": cp, "c_v": V,
                             "chi2": c2, "chi2_pvalue": c2p, "chi2_ndf": c2ndf,
                             "pull_offset_z": bias["offset_z"],
                             "pull_slope_z_per_bin": bias["slope_z_per_bin"],
                             "pull_max_abs": bias["max_abs_pull"],
                             "pull_argmax_bin": bias["argmax_bin"]}
-                print(f"    {q:<12}: KS D={D:>12.4g}  p={p:>9.3g}  "
-                      f"W1={w1:>12.4g}  JSdist={jsc:>10.4g}  "
-                      f"CvM T={T:>12.4g}  p={cp:>9.3g}  "
-                      f"chi2={c2:>9.3g}/{c2ndf}  p={c2p:>9.3g}  "
-                      f"CvM V={V:>9.3g}")
-                print(f"    {'':<12}  bias: offset={bias['offset_z']:>+8.3f} sigma  "
-                      f"slope={bias['slope_z_per_bin']:>+9.4f} sigma/bin  "
-                      f"max|pull|={bias['max_abs_pull']:>7.3f} @ bin {bias['argmax_bin']}")
             data[f]["_tests"] = tests
 
-        print()
+            if console is not None:
+                console.print(rich_tests_table(tests, labels[ref_path]))
+                console.print(rich_bias_table(tests, labels[ref_path]))
+            else:
+                print(f"  vs reference {labels[ref_path]}:")
+                for q in QUANTITIES:
+                    d = tests[q]
+                    print(f"    {q:<12}: KS D={d['ks_stat']:>12.4g}  p={d['ks_pvalue']:>9.3g}  "
+                          f"W1={d['wasserstein']:>12.4g}  JSdist={d['js_distance']:>10.4g}  "
+                          f"CvM T={d['cvm_stat']:>12.4g}  p={d['cvm_pvalue']:>9.3g}  "
+                          f"chi2={d['chi2']:>9.3g}/{d['chi2_ndf']}  p={d['chi2_pvalue']:>9.3g}  "
+                          f"CvM V={d['c_v']:>9.3g}")
+                    print(f"    {'':<12}  bias: offset={d['pull_offset_z']:>+8.3f} sigma  "
+                          f"slope={d['pull_slope_z_per_bin']:>+9.4f} sigma/bin  "
+                          f"max|pull|={d['pull_max_abs']:>7.3f} @ bin {d['pull_argmax_bin']}")
+
+        if console is not None:
+            console.print()
+        else:
+            print()
 
     if not args.text_only:
         make_plots(data, files, labels, args, ref_path, labels[ref_path])
