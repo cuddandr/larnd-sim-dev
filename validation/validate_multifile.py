@@ -13,7 +13,8 @@ Two modes:
 
 With --stat-tests, a designated reference file (--reference, default: the
 first file) is compared against every other file via two-sample KS,
-Cramer-von Mises, and 1-D Wasserstein-1 tests.
+Cramer-von Mises, 1-D Wasserstein-1, chi-square, and binned
+Jensen-Shannon distance (bits) tests.
 
 Standalone: no imports from validate_dists.py / validate_sim.py.
 """
@@ -218,6 +219,41 @@ def wasserstein1d(a, b):
     cdf_a = np.searchsorted(a, allv, side="right") / len(a)
     cdf_b = np.searchsorted(b, allv, side="right") / len(b)
     return float(_trapz(np.abs(cdf_a - cdf_b), allv))
+
+
+def jsd_2samp(hist_a, hist_b, base=2.0):
+    """Jensen-Shannon distance between two binned count histograms.
+
+    Companion to the Wasserstein-1 distance: W1 is in data units, while
+    the JS distance is a dimensionless overlap measure computed on the
+    same shared binning as the chi-square test. Returns the square root
+    of the Jensen-Shannon divergence JSD(P, Q) = 0.5 KL(P||M) +
+    0.5 KL(Q||M) with M = (P+Q)/2; for any base this matches
+    scipy.spatial.distance.jensenshannon(hist_a, hist_b, base=base).
+    Counts are normalized to probability mass and bins empty in both
+    samples contribute nothing (0*log0 = 0). The default base=2 returns
+    the distance in bits, bounded by 1: 0 = identical binned
+    distributions, 1 = disjoint supports. The squared return value is
+    the divergence in bits, i.e. the mutual information between the
+    file label and a packet's value when the two files are pooled
+    50/50. NaN if either histogram is empty (scipy propagates 0/0
+    instead; scipy's own default base is None, i.e. nats).
+    """
+    a = np.asarray(hist_a, dtype=np.float64)
+    b = np.asarray(hist_b, dtype=np.float64)
+    tot_a, tot_b = a.sum(), b.sum()
+    if tot_a == 0 or tot_b == 0:
+        return float("nan")
+    p = a / tot_a
+    q = b / tot_b
+    m = 0.5 * (p + q)
+    log_base = np.log(base) if base is not None else 1.0
+
+    def rel_entr(x, y):
+        use = x > 0   # m >= x/2 > 0 wherever x > 0, so y is safe
+        return float((x[use] * np.log(x[use] / y[use])).sum())
+
+    return float(np.sqrt(0.5 * (rel_entr(p, m) + rel_entr(q, m)) / log_base))
 
 
 def chi2_2samp(hist_a, hist_b):
@@ -515,8 +551,10 @@ def main(argv=None):
                     help="files are seed replicates of the same commit "
                          "(single color, alpha; default: discrete palette)")
     ap.add_argument("--stat-tests", action="store_true",
-                    help="run KS + Cramer-von Mises + Wasserstein-1 of each "
-                         "file vs the reference")
+                    help="run KS + Cramer-von Mises + Wasserstein-1 + "
+                         "Jensen-Shannon distance in bits (= "
+                         "scipy.spatial.distance.jensenshannon with base=2, "
+                         "on the shared binning) of each file vs the reference")
     ap.add_argument("--reference",
                     help="reference file for stat tests (default: first file)")
     ap.add_argument("--text-only", action="store_true",
@@ -596,6 +634,8 @@ def main(argv=None):
             for q in QUANTITIES:
                 D, p = ks_2samp(data[f][q], data[ref_path][q])
                 w1 = wasserstein1d(data[f][q], data[ref_path][q])
+                jsc = jsd_2samp(data[f]["_hists"][q],
+                                data[ref_path]["_hists"][q])
                 T, cp = cvm_2samp(data[f][q], data[ref_path][q])
                 c2, c2p, c2ndf = chi2_2samp(data[f]["_hists"][q],
                                             data[ref_path]["_hists"][q])
@@ -606,6 +646,7 @@ def main(argv=None):
                 pull = np.where(use, (h - href) / np.where(use, sigma, 1.0), 0.0)
                 bias = pull_bias_metrics(pull, use)
                 tests[q] = {"ks_stat": D, "ks_pvalue": p, "wasserstein": w1,
+                            "jsd": jsc ** 2, "js_distance": jsc,
                             "cvm_stat": T, "cvm_pvalue": cp,
                             "chi2": c2, "chi2_pvalue": c2p, "chi2_ndf": c2ndf,
                             "pull_offset_z": bias["offset_z"],
@@ -613,7 +654,8 @@ def main(argv=None):
                             "pull_max_abs": bias["max_abs_pull"],
                             "pull_argmax_bin": bias["argmax_bin"]}
                 print(f"    {q:<12}: KS D={D:>12.4g}  p={p:>9.3g}  "
-                      f"W1={w1:>12.4g}  CvM T={T:>12.4g}  p={cp:>9.3g}  "
+                      f"W1={w1:>12.4g}  JSdist={jsc:>10.4g}  "
+                      f"CvM T={T:>12.4g}  p={cp:>9.3g}  "
                       f"chi2={c2:>9.3g}/{c2ndf}  p={c2p:>9.3g}  "
                       f"CvM V={V:>9.3g}")
                 print(f"    {'':<12}  bias: offset={bias['offset_z']:>+8.3f} sigma  "
