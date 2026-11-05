@@ -13,8 +13,10 @@ Two modes:
 
 With --stat-tests, a designated reference file (--reference, default: the
 first file) is compared against every other file via two-sample KS,
-Cramer-von Mises, 1-D Wasserstein-1, chi-square, and binned
-Jensen-Shannon distance (bits) tests.
+Cramer-von Mises, 1-D Wasserstein-1, chi-square, binned Jensen-Shannon
+distance (bits), Welch's t-test with Cohen's d, median-centered Levene
+with variance ratio, and Mann-Whitney U with rank-biserial correlation
+tests.
 
 Text output is rendered with Rich tables (aligned columns, rules between
 files, p-value flagging); --plain forces plain text, which is also the
@@ -223,6 +225,61 @@ def cvm_2samp(a, b):
     from scipy.stats import cramervonmises_2samp
     res = cramervonmises_2samp(a, b, method="auto")
     return float(res.statistic), float(res.pvalue)
+
+
+def welch_ttest(a, b):
+    """Welch's unequal-variance t-test on the means, plus Cohen's d.
+
+    Returns (t_stat, p_value, cohen_d). t > 0 / d > 0 means `a` has the
+    larger mean. Cohen's d uses the pooled sample std:
+    d = (mean(a) - mean(b)) / s_pooled,
+    s_pooled = sqrt(((n_a-1) var(a, ddof=1) + (n_b-1) var(b, ddof=1)) / (n_a+n_b-2)).
+    d is NaN when s_pooled == 0 (constant data in both samples).
+    """
+    from scipy.stats import ttest_ind
+    if len(a) < 2 or len(b) < 2:
+        return float("nan"), float("nan"), float("nan")
+    res = ttest_ind(a, b, equal_var=False)
+    n_a, n_b = len(a), len(b)
+    s_pooled = np.sqrt(((n_a - 1) * np.var(a, ddof=1)
+                        + (n_b - 1) * np.var(b, ddof=1)) / (n_a + n_b - 2))
+    d = float(np.mean(a) - np.mean(b)) / float(s_pooled) if s_pooled > 0 else float("nan")
+    return float(res.statistic), float(res.pvalue), d
+
+
+def levene_variance(a, b):
+    """Levene test (median-centered, i.e. Brown-Forsythe) for equal
+    variances, plus the sample variance ratio.
+
+    Returns (W_stat, p_value, var_ratio) with
+    var_ratio = var(a, ddof=1) / var(b, ddof=1); NaN when either variance
+    is 0. var_ratio > 1 means `a` is more dispersed.
+    """
+    from scipy.stats import levene
+    if len(a) < 2 or len(b) < 2:
+        return float("nan"), float("nan"), float("nan")
+    res = levene(a, b, center="median")
+    var_a, var_b = np.var(a, ddof=1), np.var(b, ddof=1)
+    ratio = float(var_a / var_b) if var_a > 0 and var_b > 0 else float("nan")
+    return float(res.statistic), float(res.pvalue), ratio
+
+
+def mwu_rankbiserial(a, b):
+    """Mann-Whitney U test (asymptotic p) plus rank-biserial correlation.
+
+    Returns (U, p_value, rank_biserial). U is the statistic for `a` vs `b`;
+    rank_biserial = 2*U/(n_a*n_b) - 1, so r > 0 means values from `a`
+    tend to be stochastically larger than from `b`.
+    Uses method='asymptotic': exact mode is infeasible at n ~ 2.7e5 with
+    heavy ties (e.g. 256 unique dataword values).
+    """
+    from scipy.stats import mannwhitneyu
+    if len(a) < 1 or len(b) < 1:
+        return float("nan"), float("nan"), float("nan")
+    res = mannwhitneyu(a, b, alternative="two-sided", method="asymptotic")
+    n_a, n_b = len(a), len(b)
+    r = 2.0 * float(res.statistic) / (n_a * n_b) - 1.0
+    return float(res.statistic), float(res.pvalue), r
 
 
 def wasserstein1d(a, b):
@@ -595,7 +652,7 @@ def rich_tests_table(tests, ref_label):
     below 0.01 (yellow) or 0.001 (red)."""
     t = _RichTable(title=_RichText.assemble(
                        "two-sample tests vs reference ", (ref_label, "bold")),
-                   box=_rbox.SIMPLE_HEAVY, header_style="bold",
+                   box=_rbox.SIMPLE, header_style="bold",
                    caption="row color: yellow p<0.01, red p<0.001 "
                            "(min of KS/CvM/chi² p)",
                    caption_justify="left")
@@ -642,6 +699,41 @@ def rich_bias_table(tests, ref_label):
     return t
 
 
+def rich_moment_table(tests, ref_label):
+    """Moment/distribution-shift tests vs the reference: one row per
+    quantity. Rows are flagged when the smallest of the Welch/Levene/
+    MWU p-values is below 0.01 (yellow) or 0.001 (red)."""
+    t = _RichTable(title=_RichText.assemble(
+                       "moment & shift tests vs reference ", (ref_label, "bold")),
+                   box=_rbox.SIMPLE, header_style="bold",
+                   caption="row color: yellow p<0.01, red p<0.001 "
+                           "(min of Welch/Levene/MWU p)",
+                   caption_justify="left")
+    t.add_column("quantity")
+    t.add_column("Welch t", justify="right")
+    t.add_column("Welch p", justify="right")
+    t.add_column("Cohen d", justify="right")
+    t.add_column("Levene W", justify="right")
+    t.add_column("Levene p", justify="right")
+    t.add_column("var ratio", justify="right")
+    t.add_column("MWU U", justify="right")
+    t.add_column("MWU p", justify="right")
+    t.add_column("rank-biserial", justify="right")
+    for q, d in tests.items():
+        p_min = min(d["welch_pvalue"], d["levene_pvalue"], d["mwu_pvalue"])
+        style = ("bold red" if p_min < 1e-3
+                 else "yellow" if p_min < 1e-2 else None)
+        t.add_row(q,
+                  f"{d['welch_t']:.4g}", f"{d['welch_pvalue']:.3g}",
+                  f"{d['cohen_d']:+.4g}",
+                  f"{d['levene_w']:.4g}", f"{d['levene_pvalue']:.3g}",
+                  f"{d['var_ratio']:.4g}",
+                  f"{d['mwu_u']:.4g}", f"{d['mwu_pvalue']:.3g}",
+                  f"{d['rank_biserial']:+.4g}",
+                  style=style)
+    return t
+
+
 def main(argv=None):
     t_start = time.monotonic()
     ap = argparse.ArgumentParser(
@@ -655,7 +747,10 @@ def main(argv=None):
                     help="run KS + Cramer-von Mises + Wasserstein-1 + "
                          "Jensen-Shannon distance in bits (= "
                          "scipy.spatial.distance.jensenshannon with base=2, "
-                         "on the shared binning) of each file vs the reference")
+                         "on the shared binning), Welch t (+ Cohen's d), "
+                         "Levene median-centered (+ variance ratio), "
+                         "Mann-Whitney U (+ rank-biserial) of each file vs "
+                         "the reference")
     ap.add_argument("--reference",
                     help="reference file for stat tests (default: first file)")
     ap.add_argument("--text-only", action="store_true",
@@ -745,7 +840,7 @@ def main(argv=None):
             console.rule(_RichText.assemble(
                              (os.path.basename(f), "bold"),
                              f" · label {labels[f]}"),
-                         style="cyan" if f == ref_path else None)
+                         style="cyan" if f == ref_path else "blue")
             console.print(f"n_packets: {data[f]['n_packets']:,} "
                           f"(after packet_type==0 filter){drop_note}",
                           highlight=False)
@@ -769,6 +864,9 @@ def main(argv=None):
                 c2, c2p, c2ndf = chi2_2samp(data[f]["_hists"][q],
                                             data[ref_path]["_hists"][q])
                 V = np.sqrt(c2 / (len(data[f][q]) * (c2ndf - 1)))
+                wt, wtp, cd = welch_ttest(data[f][q], data[ref_path][q])
+                lw, lwp, vr = levene_variance(data[f][q], data[ref_path][q])
+                mu, mup, rb = mwu_rankbiserial(data[f][q], data[ref_path][q])
                 h, href = data[f]["_hists"][q], data[ref_path]["_hists"][q]
                 sigma = np.sqrt(href.astype(np.float64) + h.astype(np.float64))
                 use = sigma > 0
@@ -781,10 +879,14 @@ def main(argv=None):
                             "pull_offset_z": bias["offset_z"],
                             "pull_slope_z_per_bin": bias["slope_z_per_bin"],
                             "pull_max_abs": bias["max_abs_pull"],
-                            "pull_argmax_bin": bias["argmax_bin"]}
+                            "pull_argmax_bin": bias["argmax_bin"],
+                            "welch_t": wt, "welch_pvalue": wtp, "cohen_d": cd,
+                            "levene_w": lw, "levene_pvalue": lwp, "var_ratio": vr,
+                            "mwu_u": mu, "mwu_pvalue": mup, "rank_biserial": rb}
             data[f]["_tests"] = tests
 
             if console is not None:
+                console.print(rich_moment_table(tests, labels[ref_path]))
                 console.print(rich_tests_table(tests, labels[ref_path]))
                 console.print(rich_bias_table(tests, labels[ref_path]))
             else:
@@ -799,6 +901,11 @@ def main(argv=None):
                     print(f"    {'':<12}  bias: offset={d['pull_offset_z']:>+8.3f} sigma  "
                           f"slope={d['pull_slope_z_per_bin']:>+9.4f} sigma/bin  "
                           f"max|pull|={d['pull_max_abs']:>7.3f} @ bin {d['pull_argmax_bin']}")
+                    print(f"    {'':<12}  moment: Welch t={d['welch_t']:>+11.4g}  p={d['welch_pvalue']:>9.3g}  "
+                          f"CohenD={d['cohen_d']:>+9.3g}  LeveneW={d['levene_w']:>10.4g}  p={d['levene_pvalue']:>9.3g}  "
+                          f"varRatio={d['var_ratio']:>8.4g}")
+                    print(f"    {'':<12}  shift : MWU U={d['mwu_u']:>12.4g}  p={d['mwu_pvalue']:>9.3g}  "
+                          f"rankBis={d['rank_biserial']:>+8.4g}")
 
         if console is not None:
             console.print()
