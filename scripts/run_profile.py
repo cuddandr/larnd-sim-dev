@@ -49,9 +49,8 @@ def run_profile():
                         help="Number of concurrent simulation copies to run")
     parser.add_argument("-s", "--seed", default=None, type=int,
                         help="Random seed. Use -s or -s 0 to auto-generate.")
+    parser.add_argument("--cupy-mem-pool", action="store_true", help="Enable the CuPy memory pool.")
     parser.add_argument("--reinstall", action="store_true", help="Run 'pip install -e .' after checkout")
-
-
 
     args = parser.parse_args()
 
@@ -77,6 +76,15 @@ def run_profile():
     if not os.path.isdir(repo_path):
         print(f"Error: Repository path {repo_path} not found.", file=sys.stderr)
         sys.exit(1)
+
+    # Env var is to disable while the CLI flag is to enable, hence the swap in truth value
+    # Turn off the CuPy memory pool by default
+    if args.cupy_mem_pool:
+        os.environ['LARNDSIM_DISABLE_CUPY_MEMPOOL'] = "False"
+        print("Enabling CuPy memory pool.")
+    else:
+        os.environ['LARNDSIM_DISABLE_CUPY_MEMPOOL'] = "True"
+        print("Disabling CuPy memory pool.")
 
     # Switch Git reference (and save original ref)
     original_ref = None
