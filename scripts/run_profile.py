@@ -47,6 +47,11 @@ def run_profile():
     parser.add_argument("-f", "--force", action="store_true", help="Pass force to internal CLI")
     parser.add_argument("-n", "--num", type=int, default=1,
                         help="Number of concurrent simulation copies to run")
+    parser.add_argument(
+        "--single-gpu",
+        action="store_true",
+        help="Run all copies on the first visible GPU, with or without CUDA MPS.",
+    )
     parser.add_argument("-s", "--seed", default=None, type=int,
                         help="Random seed. Use -s or -s 0 to auto-generate.")
     parser.add_argument("--cupy-mem-pool", action="store_true", help="Enable the CuPy memory pool.")
@@ -63,7 +68,7 @@ def run_profile():
         base_seed = args.seed if args.seed > 0 else random.randint(0, 2**31 -1)
 
     num_gpus = count_visible_gpus()
-    if args.num > num_gpus:
+    if num_gpus == 0 or (not args.single_gpu and args.num > num_gpus):
         print(f"Error: requested {args.num} copies but only {num_gpus} GPU(s) visible.", file=sys.stderr)
         sys.exit(1)
 
@@ -138,16 +143,17 @@ def run_profile():
             if args.log and args.num > 1:
                 log_path = f"{Path(args.log).stem}_{i+1:02d}{Path(args.log).suffix}"
 
-            # Pin each copy to its own GPU
+            # Pin copies to their own GPU by default, or all copies to the first visible GPU.
             env = None
-            if args.num > 1:
+            if args.num > 1 or args.single_gpu:
                 env = os.environ.copy()
+                gpu_index = 0 if args.single_gpu else i
                 if cvd is not None:
-                    # Parent already restricted devices: pick the i-th of the visible ones.
+                    # Respect the parent's device restriction and ordering.
                     visible = [d.strip() for d in cvd.split(",") if d.strip()]
-                    env["CUDA_VISIBLE_DEVICES"] = visible[i]
+                    env["CUDA_VISIBLE_DEVICES"] = visible[gpu_index]
                 else:
-                    env["CUDA_VISIBLE_DEVICES"] = str(i)
+                    env["CUDA_VISIBLE_DEVICES"] = str(gpu_index)
 
             cmd = cmd_prefix + []
             if base_seed is not None:
